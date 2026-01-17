@@ -62,4 +62,6 @@ I built this one day when I was bored and wanted a way to instantly generate ess
 * `webuild static ./new-page`
 * `webuild dynamic /var/www/html`
 
-i over explained but thats not a problem.
+---
+
+## Thats it for now
