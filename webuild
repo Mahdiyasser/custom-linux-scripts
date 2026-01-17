@@ -1,0 +1,49 @@
+#!/bin/bash
+
+# Function to display usage
+usage() {
+    echo "Usage: webuild [static|dynamic|platform] [directory]"
+    echo "Default directory is the current one."
+    exit 1
+}
+
+# Check if at least one argument is provided
+if [ -z "$1" ]; then
+    usage
+fi
+
+TYPE=$1
+# Use the second argument as target dir; if empty, use current directory (.)
+TARGET_DIR=${2:-.}
+
+# Create the directory if it doesn't exist (handles absolute and relative paths)
+mkdir -p "$TARGET_DIR"
+
+# Define file lists
+FILES_STATIC=("index.html" "style.css" "script.js")
+FILES_DYNAMIC=("index.html" "style.css" "script.js" "server.php")
+FILES_PLATFORM=("index.html" "style.css" "script.js" "server.php" "data.json")
+
+case $TYPE in
+    static)
+        FILES=("${FILES_STATIC[@]}")
+        ;;
+    dynamic)
+        FILES=("${FILES_DYNAMIC[@]}")
+        ;;
+    platform)
+        FILES=("${FILES_PLATFORM[@]}")
+        ;;
+    *)
+        echo "Error: Unknown type '$TYPE'"
+        usage
+        ;;
+esac
+
+# Create the files in the target directory
+for file in "${FILES[@]}"; do
+    touch "$TARGET_DIR/$file"
+    echo "Created $TARGET_DIR/$file"
+done
+
+echo "Done! $TYPE environment is ready."

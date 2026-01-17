@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Detect the real user
+REAL_USER=${SUDO_USER:-$USER}
+USER_HOME=$(eval echo "~$REAL_USER")
+XAUTH="${USER_HOME}/.Xauthority"
+
+XMOD_FILE="${USER_HOME}/.Xmodmap"
+MOUNT_DEV="/dev/sda4"
+MOUNT_POINT="/media/mahdi/D-drive"
+LOG_FILE="${USER_HOME}/startup.log"
+
+# Command to start services
+START_SERVICES_CMD="sudo systemctl start apache2 mysql"
+
+log(){ printf '%s %s\n' "$(date +'%Y-%m-%d.%H:%M:%S')" "$*" | tee -a "$LOG_FILE"; }
+fancy(){ printf "\n┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n:: %s ::\n┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛\n\n" "$1"; log "$1"; }
+
+log "=== Startup routine initiated ==="
+fancy "BOOT SEQUENCE: Powering up systems..."
+
+fancy "STEP 0 — Authenticating for sudo"
+sudo -v || exit 1
+
+# Fix for GUI permissions (Still needed for xmodmap)
+export DISPLAY=":0"
+export XAUTHORITY="$XAUTH"
+xhost +local:"$REAL_USER" >/dev/null 2>&1
+
+fancy "STEP 1 — Applying X keymap"
+if [ -f "$XMOD_FILE" ]; then
+  sudo -u "$REAL_USER" DISPLAY=:0 XAUTHORITY="$XAUTH" xmodmap "$XMOD_FILE" >/dev/null 2>&1 || log "xmodmap warning"
+fi
+
+fancy "STEP 2 — Mounting disk"
+if mountpoint -q "$MOUNT_POINT"; then
+  log "Already mounted: $MOUNT_POINT"
+else
+  sudo mkdir -p "$MOUNT_POINT"
+  sudo mount "$MOUNT_DEV" "$MOUNT_POINT" 2>&1 | tee -a "$LOG_FILE"
+fi
+
+# Note: The command to open the disk window (xdg-open) has been removed.
+
+fancy "STEP 3 — Starting services (apache2, mysql)"
+eval "$START_SERVICES_CMD"
+echo "✔ Apache2 and MySQL starting..."
+sleep 1
+if sudo systemctl is-active --quiet apache2.service && sudo systemctl is-active --quiet mysql.service; then
+  echo "✔ Services are ACTIVE"
+  log "Services active"
+else
+  log "Services failed to start"; exit 3
+fi
+
+# Note: The command to launch Chrome has been removed.
+
+fancy "COMPLETE — All systems nominal"
+log "=== Startup routine completed successfully ==="
+exit 0
