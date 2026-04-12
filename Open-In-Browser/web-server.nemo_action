@@ -1,0 +1,10 @@
+[Nemo Action]
+Active=true
+Name=Open in Browser
+Comment=Map local path to network URL
+Exec=/home/mahdi/.local/bin/open-in-browser.sh %F
+Icon-Name=web-browser
+Selection=any
+Extensions=dir;
+Quote=double
+Conditions=path:/media/mahdi/D-drive/
