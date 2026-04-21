@@ -87,4 +87,37 @@ This action is hardcoded to specific network IPs and drive paths. You will need 
 
 ---
 
+## 🗂️ 5. GitMan
+**The Multi-Repo Manager**
+
+When you have a lot of repositories and switch between devices, it's easy to forget to pull before you push. GitMan solves that by giving you a clean interactive menu to manage all your repos at once from a single directory.
+
+### 🛠️ How to use it:
+You can find the script in the `GitMan` folder in this repository.
+
+* Copy `gitman.sh` into the directory that **contains** your repos (not inside one of them) and make it executable:
+  `cp GitMan/gitman.sh ~/your-repos-dir/`
+  `chmod +x ~/your-repos-dir/gitman.sh`
+* Run it from that directory:
+  `./gitman.sh`
+
+It will automatically detect every subdirectory with a `.git` folder and include it.
+
+### Menu Options:
+
+| Option | Description |
+| :--- | :--- |
+| `1` Pull All | Pull every detected repo at once |
+| `2` Push All | Push every detected repo at once |
+| `3` Check Pull | See which repos are behind the remote |
+| `4` Check Push | See which repos are ahead of the remote |
+| `5` Pull Specific | Pick one or more repos to pull |
+| `6` Push Specific | Pick one or more repos to push |
+| `7` Help | Show usage info inside the script |
+
+* **Multi-select:** When picking specific repos, type the numbers separated by `_` — for example `1_3_5`. Type `all` to select everything in the list.
+* **Logs:** Every action is logged to `git.log` in the same directory, with a timestamp and per-repo result for each run.
+
+---
+
 ## That's it for now
