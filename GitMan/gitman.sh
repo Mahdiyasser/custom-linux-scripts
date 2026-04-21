@@ -4,7 +4,7 @@
 # ║           Multi-repo Git Manager  •  by Mahdi Yasser        ║
 # ╚══════════════════════════════════════════════════════════════╝
 
-set -euo pipefail
+set -uo pipefail
 
 # ── Config ────────────────────────────────────────────────────
 LOG_FILE="$(pwd)/git.log"
@@ -85,12 +85,26 @@ needs_push() {
   [[ "$ahead" -gt 0 ]]
 }
 
+# ── Get ahead count robustly (handles missing upstream) ───────
+get_ahead_count() {
+  local repo="$1"
+  local ahead
+  # Try @{u} first (requires upstream to be set)
+  ahead=$(git -C "$SCAN_DIR/$repo" rev-list --count @{u}..HEAD 2>/dev/null)
+  if [[ -z "$ahead" ]]; then
+    # No upstream set — check if there are local commits not on origin/HEAD
+    local branch
+    branch=$(git -C "$SCAN_DIR/$repo" rev-parse --abbrev-ref HEAD 2>/dev/null)
+    ahead=$(git -C "$SCAN_DIR/$repo" rev-list --count "origin/$branch..HEAD" 2>/dev/null || echo 0)
+  fi
+  echo "${ahead:-0}"
+}
+
 # ── Pull a single repo ────────────────────────────────────────
 do_pull() {
   local repo="$1"
-  local result
-  result=$(git -C "$SCAN_DIR/$repo" pull 2>&1)
-  local rc=$?
+  local result rc
+  result=$(git -C "$SCAN_DIR/$repo" pull 2>&1); rc=$?
   local first_line
   first_line=$(echo "$result" | head -1)
   if [[ $rc -eq 0 ]]; then
@@ -105,9 +119,8 @@ do_pull() {
 # ── Push a single repo ────────────────────────────────────────
 do_push() {
   local repo="$1"
-  local result
-  result=$(git -C "$SCAN_DIR/$repo" push 2>&1)
-  local rc=$?
+  local result rc
+  result=$(git -C "$SCAN_DIR/$repo" push 2>&1); rc=$?
   local summary
   summary=$(echo "$result" | grep -v '^$' | tail -1)
   if [[ $rc -eq 0 ]]; then
@@ -227,7 +240,7 @@ cmd_check_push() {
   local found=0
   for repo in "${REPOS[@]}"; do
     local ahead
-    ahead=$(git -C "$SCAN_DIR/$repo" rev-list --count @{u}..HEAD 2>/dev/null || echo 0)
+    ahead=$(get_ahead_count "$repo")
     if [[ "$ahead" -gt 0 ]]; then
       echo -e "  ${G}↑${N}  ${W}$repo${N}  ${D}($ahead commit(s) ahead)${N}"
       ((found++))
