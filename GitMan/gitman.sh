@@ -4,7 +4,7 @@
 # ║           Multi-repo Git Manager  •  by Mahdi Yasser        ║
 # ╚══════════════════════════════════════════════════════════════╝
 
-set -uo pipefail
+set -euo pipefail
 
 # ── Config ────────────────────────────────────────────────────
 LOG_FILE="$(pwd)/git.log"
@@ -55,17 +55,12 @@ get_repos() {
   echo "${repos[@]:-}"
 }
 
-# ── Fetch all in parallel ────────────────────────────────────
+# ── Fetch all silently (needed for accurate status) ───────────
 fetch_all() {
   local repos=("$@")
   echo -e "\n  ${D}Fetching remotes…${N}"
-  local pids=()
   for repo in "${repos[@]}"; do
-    git -C "$SCAN_DIR/$repo" fetch --quiet 2>/dev/null &
-    pids+=($!)
-  done
-  for pid in "${pids[@]}"; do
-    wait "$pid" || true
+    git -C "$SCAN_DIR/$repo" fetch --quiet 2>/dev/null || true
   done
 }
 
@@ -85,51 +80,31 @@ needs_push() {
   [[ "$ahead" -gt 0 ]]
 }
 
-# ── Get ahead count robustly (handles missing upstream) ───────
-get_ahead_count() {
-  local repo="$1"
-  local ahead
-  # Try @{u} first (requires upstream to be set)
-  ahead=$(git -C "$SCAN_DIR/$repo" rev-list --count @{u}..HEAD 2>/dev/null)
-  if [[ -z "$ahead" ]]; then
-    # No upstream set — check if there are local commits not on origin/HEAD
-    local branch
-    branch=$(git -C "$SCAN_DIR/$repo" rev-parse --abbrev-ref HEAD 2>/dev/null)
-    ahead=$(git -C "$SCAN_DIR/$repo" rev-list --count "origin/$branch..HEAD" 2>/dev/null || echo 0)
-  fi
-  echo "${ahead:-0}"
-}
-
 # ── Pull a single repo ────────────────────────────────────────
 do_pull() {
   local repo="$1"
-  local result rc
-  result=$(git -C "$SCAN_DIR/$repo" pull 2>&1); rc=$?
-  local first_line
-  first_line=$(echo "$result" | head -1)
-  if [[ $rc -eq 0 ]]; then
-    ok "${W}$repo${N}  ${D}$first_line${N}"
-    echo "    $repo → OK: $first_line" >> "$LOG_FILE"
+  echo -e "  ${D}► $repo${N}"
+  if git -C "$SCAN_DIR/$repo" pull; then
+    ok "${W}$repo${N}"
+    echo "    $repo → OK" >> "$LOG_FILE"
   else
-    fail "${W}$repo${N}  ${R}$first_line${N}"
-    echo "    $repo → FAIL: $first_line" >> "$LOG_FILE"
+    fail "${W}$repo${N}"
+    echo "    $repo → FAIL" >> "$LOG_FILE"
   fi
 }
 
 # ── Push a single repo ────────────────────────────────────────
 do_push() {
   local repo="$1"
-  local result rc
-  result=$(git -C "$SCAN_DIR/$repo" push 2>&1); rc=$?
-  local summary
-  summary=$(echo "$result" | grep -v '^$' | tail -1)
-  if [[ $rc -eq 0 ]]; then
-    ok "${W}$repo${N}  ${D}$summary${N}"
-    echo "    $repo → OK: $summary" >> "$LOG_FILE"
+  echo -e "  ${D}► $repo${N}"
+  git -C "$SCAN_DIR/$repo" add .
+  git -C "$SCAN_DIR/$repo" commit -m "Update" || true
+  if git -C "$SCAN_DIR/$repo" push; then
+    ok "${W}$repo${N}"
+    echo "    $repo → OK" >> "$LOG_FILE"
   else
-    summary=$(echo "$result" | head -1)
-    fail "${W}$repo${N}  ${R}$summary${N}"
-    echo "    $repo → FAIL: $summary" >> "$LOG_FILE"
+    fail "${W}$repo${N}"
+    echo "    $repo → FAIL" >> "$LOG_FILE"
   fi
 }
 
@@ -240,7 +215,7 @@ cmd_check_push() {
   local found=0
   for repo in "${REPOS[@]}"; do
     local ahead
-    ahead=$(get_ahead_count "$repo")
+    ahead=$(git -C "$SCAN_DIR/$repo" rev-list --count @{u}..HEAD 2>/dev/null || echo 0)
     if [[ "$ahead" -gt 0 ]]; then
       echo -e "  ${G}↑${N}  ${W}$repo${N}  ${D}($ahead commit(s) ahead)${N}"
       ((found++))
