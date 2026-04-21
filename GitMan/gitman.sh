@@ -4,7 +4,6 @@
 # ║           Multi-repo Git Manager  •  by Mahdi Yasser        ║
 # ╚══════════════════════════════════════════════════════════════╝
 
-set -euo pipefail
 
 # ── Config ────────────────────────────────────────────────────
 LOG_FILE="$(pwd)/git.log"
@@ -55,29 +54,52 @@ get_repos() {
   echo "${repos[@]:-}"
 }
 
-# ── Fetch all silently (needed for accurate status) ───────────
-fetch_all() {
+# ── Parallel fetch + check ───────────────────────────────────
+# Each repo gets its own background job: fetch + count written to tmpdir.
+# Runs in the MAIN shell (not via $()) so output is live and jobs are real.
+_CHECK_FOUND=0
+
+run_parallel_check() {
+  local mode="$1"; shift
   local repos=("$@")
-  echo -e "\n  ${D}Fetching remotes…${N}"
+  _CHECK_FOUND=0
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  trap "rm -rf $tmpdir" RETURN
+
+  local pids=()
   for repo in "${repos[@]}"; do
-    git -C "$SCAN_DIR/$repo" fetch --quiet 2>/dev/null || true
+    (
+      git -C "$SCAN_DIR/$repo" fetch --quiet 2>/dev/null || true
+      local branch
+      branch=$(git -C "$SCAN_DIR/$repo" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+      local count=0
+      if [[ "$mode" == "pull" ]]; then
+        count=$(git -C "$SCAN_DIR/$repo" rev-list --count HEAD..origin/"$branch" 2>/dev/null || echo 0)
+      else
+        count=$(git -C "$SCAN_DIR/$repo" rev-list --count origin/"$branch"..HEAD 2>/dev/null || echo 0)
+      fi
+      printf '%s' "$count" > "$tmpdir/$repo"
+    ) &
+    pids+=($!)
   done
-}
 
-# ── Check if repo needs pull ──────────────────────────────────
-needs_pull() {
-  local repo="$1"
-  local behind
-  behind=$(git -C "$SCAN_DIR/$repo" rev-list --count HEAD..@{u} 2>/dev/null || echo 0)
-  [[ "$behind" -gt 0 ]]
-}
+  echo -e "\n  ${D}Checking ${#repos[@]} repos in parallel…${N}"
+  for pid in "${pids[@]}"; do wait "$pid" || true; done
+  divider
 
-# ── Check if repo needs push ──────────────────────────────────
-needs_push() {
-  local repo="$1"
-  local ahead
-  ahead=$(git -C "$SCAN_DIR/$repo" rev-list --count @{u}..HEAD 2>/dev/null || echo 0)
-  [[ "$ahead" -gt 0 ]]
+  for repo in "${repos[@]}"; do
+    local count=0
+    [[ -f "$tmpdir/$repo" ]] && count=$(< "$tmpdir/$repo")
+    if [[ "$count" -gt 0 ]]; then
+      if [[ "$mode" == "pull" ]]; then
+        echo -e "  ${Y}↓${N}  ${W}$repo${N}  ${D}($count commit(s) behind)${N}"
+      else
+        echo -e "  ${G}↑${N}  ${W}$repo${N}  ${D}($count commit(s) ahead)${N}"
+      fi
+      (( _CHECK_FOUND++ )) || true
+    fi
+  done
 }
 
 # ── Pull a single repo ────────────────────────────────────────
@@ -152,7 +174,6 @@ cmd_pull_all() {
   [[ ${#REPOS[@]} -eq 0 ]] && { info "No git repos found."; return; }
 
   header "Pull All  (${#REPOS[@]} repos)"
-  fetch_all "${REPOS[@]}"
   divider
   log_entry "PULL ALL" "${REPOS[@]}"
   for repo in "${REPOS[@]}"; do
@@ -184,21 +205,9 @@ cmd_check_pull() {
   [[ ${#REPOS[@]} -eq 0 ]] && { info "No git repos found."; return; }
 
   header "Needs Pull"
-  fetch_all "${REPOS[@]}"
-  divider
-
-  local found=0
-  for repo in "${REPOS[@]}"; do
-    local behind
-    behind=$(git -C "$SCAN_DIR/$repo" rev-list --count HEAD..@{u} 2>/dev/null || echo 0)
-    if [[ "$behind" -gt 0 ]]; then
-      echo -e "  ${Y}↓${N}  ${W}$repo${N}  ${D}($behind commit(s) behind)${N}"
-      ((found++))
-    fi
-  done
-
-  [[ $found -eq 0 ]] && ok "All repos are up to date."
-  log_entry "CHECK PULL — $found repo(s) behind"
+  run_parallel_check "pull" "${REPOS[@]}"
+  [[ "$_CHECK_FOUND" -eq 0 ]] && ok "All repos are up to date."
+  log_entry "CHECK PULL — $_CHECK_FOUND repo(s) behind"
 }
 
 # ══════════════════════════════════════════════════════════════
@@ -209,21 +218,9 @@ cmd_check_push() {
   [[ ${#REPOS[@]} -eq 0 ]] && { info "No git repos found."; return; }
 
   header "Needs Push"
-  fetch_all "${REPOS[@]}"
-  divider
-
-  local found=0
-  for repo in "${REPOS[@]}"; do
-    local ahead
-    ahead=$(git -C "$SCAN_DIR/$repo" rev-list --count @{u}..HEAD 2>/dev/null || echo 0)
-    if [[ "$ahead" -gt 0 ]]; then
-      echo -e "  ${G}↑${N}  ${W}$repo${N}  ${D}($ahead commit(s) ahead)${N}"
-      ((found++))
-    fi
-  done
-
-  [[ $found -eq 0 ]] && ok "Nothing to push."
-  log_entry "CHECK PUSH — $found repo(s) ahead"
+  run_parallel_check "push" "${REPOS[@]}"
+  [[ "$_CHECK_FOUND" -eq 0 ]] && ok "Nothing to push."
+  log_entry "CHECK PUSH — $_CHECK_FOUND repo(s) ahead"
 }
 
 # ══════════════════════════════════════════════════════════════
