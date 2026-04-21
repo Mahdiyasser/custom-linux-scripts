@@ -54,37 +54,65 @@ get_repos() {
   echo "${repos[@]:-}"
 }
 
-# ── Parallel fetch + check ───────────────────────────────────
-# Each repo gets its own background job: fetch + count written to tmpdir.
-# Runs in the MAIN shell (not via $()) so output is live and jobs are real.
+# ── Check push: detect uncommitted/unstaged changes (LOCAL, instant) ─────────
+# Since you always commit+push together, "needs push" means dirty working tree:
+# untracked files, modified files, or staged-but-not-committed changes.
 _CHECK_FOUND=0
 
-run_parallel_check() {
-  local mode="$1"; shift
+run_check_push_local() {
+  local repos=("$@")
+  _CHECK_FOUND=0
+
+  echo -e "\n  ${D}Checking ${#repos[@]} repos for uncommitted changes…${N}"
+  divider
+
+  for repo in "${repos[@]}"; do
+    # porcelain v1: any output = dirty
+    local status
+    status=$(git -C "$SCAN_DIR/$repo" status --porcelain 2>/dev/null)
+    if [[ -n "$status" ]]; then
+      local staged unstaged untracked
+      staged=$(echo "$status"    | grep -c '^[MADRC]'  || true)
+      unstaged=$(echo "$status"  | grep -c '^.[MD]'    || true)
+      untracked=$(echo "$status" | grep -c '^??'        || true)
+      local parts=()
+      (( staged    > 0 )) && parts+=("${staged} staged")
+      (( unstaged  > 0 )) && parts+=("${unstaged} modified")
+      (( untracked > 0 )) && parts+=("${untracked} untracked")
+      local detail
+      detail=$(IFS=', '; echo "${parts[*]}")
+      echo -e "  ${G}↑${N}  ${W}$repo${N}  ${D}($detail)${N}"
+      (( _CHECK_FOUND++ )) || true
+    fi
+  done
+}
+
+# ── Check pull: fetch all repos in parallel, then count commits behind ────────
+run_check_pull_parallel() {
   local repos=("$@")
   _CHECK_FOUND=0
   local tmpdir
   tmpdir=$(mktemp -d)
   trap "rm -rf $tmpdir" RETURN
 
+  echo -e "\n  ${D}Fetching ${#repos[@]} repos in parallel…${N}"
+
   local pids=()
   for repo in "${repos[@]}"; do
     (
-      git -C "$SCAN_DIR/$repo" fetch --quiet 2>/dev/null || true
+      # fetch with a short timeout so a dead remote doesn't hang forever
+      git -C "$SCAN_DIR/$repo" fetch --quiet --no-tags \
+          -c gc.auto=0 2>/dev/null || true
       local branch
       branch=$(git -C "$SCAN_DIR/$repo" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
-      local count=0
-      if [[ "$mode" == "pull" ]]; then
-        count=$(git -C "$SCAN_DIR/$repo" rev-list --count HEAD..origin/"$branch" 2>/dev/null || echo 0)
-      else
-        count=$(git -C "$SCAN_DIR/$repo" rev-list --count origin/"$branch"..HEAD 2>/dev/null || echo 0)
-      fi
+      local count
+      count=$(git -C "$SCAN_DIR/$repo" \
+          rev-list --count HEAD..origin/"$branch" 2>/dev/null || echo 0)
       printf '%s' "$count" > "$tmpdir/$repo"
     ) &
     pids+=($!)
   done
 
-  echo -e "\n  ${D}Checking ${#repos[@]} repos in parallel…${N}"
   for pid in "${pids[@]}"; do wait "$pid" || true; done
   divider
 
@@ -92,11 +120,7 @@ run_parallel_check() {
     local count=0
     [[ -f "$tmpdir/$repo" ]] && count=$(< "$tmpdir/$repo")
     if [[ "$count" -gt 0 ]]; then
-      if [[ "$mode" == "pull" ]]; then
-        echo -e "  ${Y}↓${N}  ${W}$repo${N}  ${D}($count commit(s) behind)${N}"
-      else
-        echo -e "  ${G}↑${N}  ${W}$repo${N}  ${D}($count commit(s) ahead)${N}"
-      fi
+      echo -e "  ${Y}↓${N}  ${W}$repo${N}  ${D}($count commit(s) behind)${N}"
       (( _CHECK_FOUND++ )) || true
     fi
   done
@@ -119,8 +143,22 @@ do_pull() {
 do_push() {
   local repo="$1"
   echo -e "  ${D}► $repo${N}"
-  git -C "$SCAN_DIR/$repo" add .
-  git -C "$SCAN_DIR/$repo" commit -m "Update" || true
+
+  # Check if there's actually anything to commit
+  local status
+  status=$(git -C "$SCAN_DIR/$repo" status --porcelain 2>/dev/null)
+
+  if [[ -n "$status" ]]; then
+    # Ask for a commit message
+    printf "  ${Y}›${N} Commit message for ${W}$repo${N}: "
+    read -r msg
+    if [[ -z "$msg" ]]; then
+      msg="Update"
+    fi
+    git -C "$SCAN_DIR/$repo" add .
+    git -C "$SCAN_DIR/$repo" commit -m "$msg" || true
+  fi
+
   if git -C "$SCAN_DIR/$repo" push; then
     ok "${W}$repo${N}"
     echo "    $repo → OK" >> "$LOG_FILE"
@@ -205,7 +243,7 @@ cmd_check_pull() {
   [[ ${#REPOS[@]} -eq 0 ]] && { info "No git repos found."; return; }
 
   header "Needs Pull"
-  run_parallel_check "pull" "${REPOS[@]}"
+  run_check_pull_parallel "${REPOS[@]}"
   [[ "$_CHECK_FOUND" -eq 0 ]] && ok "All repos are up to date."
   log_entry "CHECK PULL — $_CHECK_FOUND repo(s) behind"
 }
@@ -217,10 +255,10 @@ cmd_check_push() {
   read -ra REPOS <<< "$(get_repos)"
   [[ ${#REPOS[@]} -eq 0 ]] && { info "No git repos found."; return; }
 
-  header "Needs Push"
-  run_parallel_check "push" "${REPOS[@]}"
-  [[ "$_CHECK_FOUND" -eq 0 ]] && ok "Nothing to push."
-  log_entry "CHECK PUSH — $_CHECK_FOUND repo(s) ahead"
+  header "Needs Push  (uncommitted changes)"
+  run_check_push_local "${REPOS[@]}"
+  [[ "$_CHECK_FOUND" -eq 0 ]] && ok "Nothing to push — all repos are clean."
+  log_entry "CHECK PUSH — $_CHECK_FOUND repo(s) dirty"
 }
 
 # ══════════════════════════════════════════════════════════════
@@ -272,9 +310,9 @@ cmd_help() {
   echo ""
   divider
   echo -e "  ${C}1${N}  Pull All          Pull every repo in this directory"
-  echo -e "  ${C}2${N}  Push All          Push every repo in this directory"
+  echo -e "  ${C}2${N}  Push All          Push every repo (stages all, asks for commit msg, pushes)"
   echo -e "  ${C}3${N}  Check Pull        See which repos are behind the remote"
-  echo -e "  ${C}4${N}  Check Push        See which repos are ahead of the remote"
+  echo -e "  ${C}4${N}  Check Push        See which repos have uncommitted changes"
   echo -e "  ${C}5${N}  Pull Specific     Choose repos to pull (multi-select)"
   echo -e "  ${C}6${N}  Push Specific     Choose repos to push (multi-select)"
   echo -e "  ${C}7${N}  Help              Show this message"
