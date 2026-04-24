@@ -4,4 +4,4 @@ Comment=Set this directory/file as Apache DocumentRoot and open in browser
 Exec=/usr/local/bin/nemo-serve.py %F
 Icon-Name=network-server
 Selection=Any
-Extensions=dir;any;
+Extensions=any;
