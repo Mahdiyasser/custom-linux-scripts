@@ -120,4 +120,54 @@ It will automatically detect every subdirectory with a `.git` folder and include
 
 ---
 
+## 🌍 6. Server With Apache
+**The Instant Dev Server**
+
+A Nemo right-click action that sets any directory (or file) as an Apache `DocumentRoot` on the fly and opens it in the browser — full Apache, full `.htaccess`, full PHP. No spinning up vhosts manually, no typing paths, just right-click and go.
+
+### 📦 Requirements
+You need these installed before running the setup:
+
+| Dependency | Install command |
+| :--- | :--- |
+| `apache2` | `sudo apt install apache2` |
+| `libapache2-mod-php` | `sudo apt install libapache2-mod-php` |
+| `python3` | Pre-installed on Linux Mint |
+| `notify-send` | Pre-installed on Linux Mint (via `libnotify-bin`) |
+
+### 🛠️ How to use it:
+You can find all three necessary files in the `Server-With-Apache` folder in this repository.
+
+**Installation (one-time):**
+1. `cd` into the `Server-With-Apache` folder.
+2. Make the setup script executable and run it:
+   ```
+   chmod +x setup.sh
+   ./setup.sh
+   ```
+3. Done. The setup script handles everything automatically — no further steps needed.
+
+**What the setup script does:**
+* Copies `nemo-serve.py` to `/usr/local/bin/` (the main engine)
+* Installs `serve_here.nemo_action` into `~/.local/share/nemo/actions/`
+* Adds a scoped sudoers rule to `/etc/sudoers.d/nemo-serve` so Apache can be reloaded without a password prompt
+* Enables Apache modules: `mod_rewrite`, `mod_headers`, and your PHP module
+* Adds `Listen 6161` to `/etc/apache2/ports.conf`
+* Restarts Nemo to pick up the new action
+
+**Usage:**
+* Right-click any **folder** → "Serve with Apache (port 6161)" → opens `http://localhost:6161`
+* Right-click any **file** → serves its parent folder as root, opens `http://localhost:6161/yourfile.ext`
+
+**What you get:**
+* Real Apache — `.htaccess` works, `mod_rewrite` works, PHP works
+* `AllowOverride All` baked in so nothing is blocked
+* Desktop notification with the URL when the server is ready
+* Error and access logs at `/tmp/nemo-apache-error.log` and `/tmp/nemo-apache-access.log`
+* One persistent vhost on port `6161` — switching directories just swaps the `DocumentRoot`, no vhost accumulation
+
+> **Note:** Only one directory can be served at a time. Right-clicking a new folder replaces the previous one.
+
+---
+
 ## That's it for now
