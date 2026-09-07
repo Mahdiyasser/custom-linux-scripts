@@ -1,0 +1,374 @@
+#!/usr/bin/env bash
+# ─────────────────────────────────────────────
+#  AI-TTS-STT — launcher
+#  Usage: ./launcher.sh
+#  Also works headless:
+#    ./launcher.sh start|stop|restart|status|logs [service]
+# ─────────────────────────────────────────────
+
+PROJECT_DIR="/media/mahdi/Storage/Apps/AI-TTS-STT"
+ENV_DIR="$PROJECT_DIR/env"
+WEB_DIR="$PROJECT_DIR/web"
+TMPDIR="/tmp/ai-tts-stt"
+
+TTS_PORT=8000
+CHAT_PORT=8001
+STT_PORT=8002
+WEB_PORT=3000
+
+mkdir -p "$TMPDIR"
+
+# ── ANSI ─────────────────────────────────────
+ESC=$'\033'
+CLEAR="${ESC}[2J${ESC}[H"
+HIDE_CURSOR="${ESC}[?25l"
+SHOW_CURSOR="${ESC}[?25h"
+BOLD="${ESC}[1m"
+RESET="${ESC}[0m"
+YELLOW="${ESC}[38;5;226m"
+GREEN="${ESC}[38;5;83m"
+RED="${ESC}[38;5;203m"
+CYAN="${ESC}[38;5;117m"
+GRAY="${ESC}[38;5;240m"
+WHITE="${ESC}[97m"
+BG_SEL="${ESC}[48;5;236m"
+
+# ── headless helpers (used by both modes) ─────
+log()  { echo -e "${CYAN}[AI-TTS-STT]${RESET} $*"; }
+ok()   { echo -e "${GREEN}[  OK  ]${RESET} $*"; }
+warn() { echo -e "${YELLOW}[ WARN ]${RESET} $*"; }
+fail() { echo -e "${RED}[ FAIL ]${RESET} $*"; }
+
+is_running() {
+    local pid_file="$TMPDIR/$1.pid"
+    [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null
+}
+
+get_pid() {
+    local pid_file="$TMPDIR/$1.pid"
+    [ -f "$pid_file" ] && cat "$pid_file" || echo "-"
+}
+
+health_check() {
+    curl -s --max-time 1 "http://192.168.1.32:$1/health" &>/dev/null
+    echo $?
+}
+
+start_uvicorn() {
+    local name="$1" port="$2" label="$3"
+    if is_running "$name"; then
+        warn "$label already running (pid $(get_pid "$name"))"
+        return
+    fi
+    local pid
+    pid=$(
+        cd "$PROJECT_DIR" || exit 1
+        source "$ENV_DIR/bin/activate"
+        nohup uvicorn "${name}:app" --host 0.0.0.0 --port "$port" \
+            > "$TMPDIR/$name.log" 2>&1 &
+        echo $!
+    )
+    echo "$pid" > "$TMPDIR/$name.pid"
+    ok "Started $label on :$port  (log: $TMPDIR/$name.log)"
+}
+
+start_php() {
+    if is_running "php_web"; then
+        warn "Web UI already running (pid $(get_pid "php_web"))"
+        return
+    fi
+    nohup php -S "192.168.1.32:$WEB_PORT" -t "$WEB_DIR" \
+        > "$TMPDIR/php_web.log" 2>&1 &
+    echo $! > "$TMPDIR/php_web.pid"
+    ok "Started Web UI on :$WEB_PORT  (log: $TMPDIR/php_web.log)"
+}
+
+stop_service() {
+    local name="$1" label="$2"
+    local pid_file="$TMPDIR/$name.pid"
+    if is_running "$name"; then
+        kill "$(cat "$pid_file")" 2>/dev/null
+        rm -f "$pid_file"
+        ok "Stopped $label"
+    else
+        warn "$label was not running"
+    fi
+}
+
+start_all() {
+    start_uvicorn "tts_api"  "$TTS_PORT"  "TTS API"
+    start_uvicorn "chat_api" "$CHAT_PORT" "Chat API"
+    start_uvicorn "stt_api"  "$STT_PORT"  "STT API"
+    start_php
+}
+
+stop_all() {
+    stop_service "tts_api"  "TTS API"
+    stop_service "chat_api" "Chat API"
+    stop_service "stt_api"  "STT API"
+    stop_service "php_web"  "Web UI"
+}
+
+# ── headless status (used by ./launcher.sh status) ──
+headless_status() {
+    echo ""
+    echo -e "${BOLD}  Service       Port   Status${RESET}"
+    echo    "  ─────────────────────────────"
+    for entry in "tts_api:TTS API:$TTS_PORT" "chat_api:Chat API:$CHAT_PORT" "stt_api:STT API:$STT_PORT" "php_web:Web UI:$WEB_PORT"; do
+        IFS=: read -r name label port <<< "$entry"
+        if is_running "$name"; then
+            pid=$(get_pid "$name")
+            echo -e "  ${GREEN}●${RESET} $label$(printf '%*s' $((13 - ${#label})) '')$port   ${GREEN}running${RESET} (pid $pid)"
+        else
+            echo -e "  ${RED}●${RESET} $label$(printf '%*s' $((13 - ${#label})) '')$port   ${RED}stopped${RESET}"
+        fi
+    done
+    echo ""
+}
+
+# ── TUI drawing ───────────────────────────────
+status_icon() {
+    local name="$1"
+    if is_running "$name"; then
+        echo -en "${GREEN}● running ${RESET}"
+    else
+        echo -en "${RED}● stopped ${RESET}"
+    fi
+}
+
+draw_services_tui() {
+    printf "${GRAY}  %-18s %-8s %-12s %s${RESET}\n" "service" "port" "status" "pid"
+    echo -e "  ${GRAY}$(printf '%.0s─' {1..50})${RESET}"
+    local rows=(
+        "tts_api:TTS API:$TTS_PORT"
+        "chat_api:Chat API:$CHAT_PORT"
+        "stt_api:STT API:$STT_PORT"
+        "php_web:Web UI:$WEB_PORT"
+    )
+    for entry in "${rows[@]}"; do
+        IFS=: read -r name label port <<< "$entry"
+        printf "  ${WHITE}%-18s${RESET}${GRAY}:%-7s${RESET}" "$label" "$port"
+        status_icon "$name"
+        printf " ${GRAY}%s${RESET}\n" "$(get_pid "$name")"
+    done
+    echo -e "\n  ${GRAY}$(printf '%.0s─' {1..50})${RESET}\n"
+}
+
+draw_menu() {
+    local selected="$1"
+    local items=("Start all" "Stop all" "Restart all" "Tail logs" "Open browser" "Quit")
+    for i in "${!items[@]}"; do
+        if [ "$i" -eq "$selected" ]; then
+            echo -e "  ${BG_SEL}${YELLOW}${BOLD}  ▶  ${items[$i]}  ${RESET}"
+        else
+            echo -e "     ${WHITE}${items[$i]}${RESET}"
+        fi
+    done
+    echo ""
+    echo -e "  ${GRAY}↑↓ navigate   enter select   q quit${RESET}"
+}
+
+draw_log_picker() {
+    local selected="$1"
+    local litems=("tts_api" "chat_api" "stt_api" "php_web" "← back")
+    echo -e "  ${GRAY}pick a log to tail  (ctrl+c to return)${RESET}\n"
+    for i in "${!litems[@]}"; do
+        if [ "$i" -eq "$selected" ]; then
+            echo -e "  ${BG_SEL}${YELLOW}${BOLD}  ▶  ${litems[$i]}  ${RESET}"
+        else
+            echo -e "     ${WHITE}${litems[$i]}${RESET}"
+        fi
+    done
+}
+
+draw_screen() {
+    local mode="$1" menu_sel="$2" log_sel="$3" message="$4"
+
+    echo -en "${CLEAR}"
+    echo ""
+    echo -e "${YELLOW}${BOLD}  AI-TTS-STT${RESET}"
+    echo -e "${GRAY}  TinyLlama · Piper TTS · Whisper STT${RESET}"
+    echo ""
+    draw_services_tui
+
+    if [ "$mode" = "menu" ]; then
+        draw_menu "$menu_sel"
+        [ -n "$message" ] && echo -e "\n  ${CYAN}${message}${RESET}"
+    elif [ "$mode" = "logpicker" ]; then
+        draw_log_picker "$log_sel"
+    fi
+}
+
+KEY=""
+read_key() {
+    local seq
+    IFS= read -r -s -n1 KEY
+    if [[ "$KEY" == $'\x1b' ]]; then
+        read -r -s -n2 -t 0.1 seq || true
+        KEY="${KEY}${seq}"
+    fi
+}
+
+# ── TUI main loop ─────────────────────────────
+run_tui() {
+    trap 'echo -en "${SHOW_CURSOR}${RESET}"; tput rmcup 2>/dev/null; exit' EXIT INT TERM
+
+    tput smcup 2>/dev/null || true
+    echo -en "${HIDE_CURSOR}"
+
+    local mode="menu"
+    local menu_sel=0
+    local log_sel=0
+    local message=""
+    local log_names=("tts_api" "chat_api" "stt_api" "php_web" "back")
+
+    while true; do
+        draw_screen "$mode" "$menu_sel" "$log_sel" "$message"
+        read_key
+
+        if [ "$mode" = "menu" ]; then
+            case "$KEY" in
+                $'\x1b[A'|k)
+                    (( menu_sel-- ))
+                    (( menu_sel < 0 )) && menu_sel=5
+                    ;;
+                $'\x1b[B'|j)
+                    (( menu_sel++ ))
+                    (( menu_sel > 5 )) && menu_sel=0
+                    ;;
+                ''|$'\n'|$'\r')
+                    case $menu_sel in
+                        0)
+                            start_all
+                            message="Starting all services… waiting 3s for APIs to come up."
+                            sleep 3
+                            ;;
+                        1)
+                            stop_all
+                            message="All services stopped."
+                            ;;
+                        2)
+                            stop_all
+                            sleep 1
+                            start_all
+                            message="Restarting… waiting 3s for APIs to come up."
+                            sleep 3
+                            ;;
+                        3)
+                            mode="logpicker"
+                            log_sel=0
+                            message=""
+                            ;;
+                        4)
+                            xdg-open "http://192.168.1.32:$WEB_PORT/web/" &>/dev/null &
+                            message="Opening browser…"
+                            ;;
+                        5)
+                            break
+                            ;;
+                    esac
+                    ;;
+                q|Q)
+                    break
+                    ;;
+            esac
+
+        elif [ "$mode" = "logpicker" ]; then
+            case "$KEY" in
+                $'\x1b[A'|k)
+                    (( log_sel-- ))
+                    (( log_sel < 0 )) && log_sel=4
+                    ;;
+                $'\x1b[B'|j)
+                    (( log_sel++ ))
+                    (( log_sel > 4 )) && log_sel=0
+                    ;;
+                ''|$'\n'|$'\r')
+                    local chosen="${log_names[$log_sel]}"
+                    if [ "$chosen" = "back" ]; then
+                        mode="menu"
+                    else
+                        local log_file="$TMPDIR/$chosen.log"
+                        echo -en "${SHOW_CURSOR}${CLEAR}"
+                        echo -e "${GRAY}  tailing $log_file — q to return${RESET}\n"
+                        if [ ! -f "$log_file" ]; then
+                            echo "  (no log yet — service may not have started)"
+                            sleep 2
+                        else
+                            tail -f "$log_file" &
+                            local tail_pid=$!
+                            trap "kill $tail_pid 2>/dev/null; trap 'echo -en \"${SHOW_CURSOR}${RESET}\"; tput rmcup 2>/dev/null; exit' EXIT INT TERM" INT
+                            read -r -s -n1
+                            kill "$tail_pid" 2>/dev/null
+                            wait "$tail_pid" 2>/dev/null
+                            trap 'echo -en "${SHOW_CURSOR}${RESET}"; tput rmcup 2>/dev/null; exit' EXIT INT TERM
+                        fi
+                        echo -en "${HIDE_CURSOR}"
+                        mode="menu"
+                    fi
+                    ;;
+                q|Q|$'\x1b')
+                    mode="menu"
+                    ;;
+            esac
+        fi
+    done
+
+    echo -en "${CLEAR}${SHOW_CURSOR}${RESET}"
+    echo "bye."
+}
+
+# ── headless entry point ──────────────────────
+case "${1:-}" in
+    start)
+        log "Starting all services..."
+        echo ""
+        start_all
+        echo ""
+        log "Waiting 3s for APIs to come up..."
+        sleep 3
+        headless_status
+        log "Hub → ${BOLD}http://192.168.1.32:$WEB_PORT/web/${RESET}"
+        ;;
+    stop)
+        log "Stopping all services..."
+        echo ""
+        stop_all
+        echo ""
+        ok "All services stopped."
+        ;;
+    restart)
+        log "Restarting all services..."
+        echo ""
+        stop_all
+        sleep 1
+        start_all
+        echo ""
+        log "Waiting 3s for APIs to come up..."
+        sleep 3
+        headless_status
+        log "Hub → ${BOLD}http://192.168.1.32:$WEB_PORT/web/${RESET}"
+        ;;
+    status)
+        headless_status
+        ;;
+    logs)
+        name="${2:-chat_api}"
+        log_file="$TMPDIR/$name.log"
+        if [ -f "$log_file" ]; then
+            tail -f "$log_file"
+        else
+            fail "No log found for '$name'. Options: tts_api chat_api stt_api php_web"
+            exit 1
+        fi
+        ;;
+    "")
+        run_tui
+        ;;
+    *)
+        echo "Usage: $0 [start|stop|restart|status|logs [service]]"
+        echo "  No args = interactive TUI launcher"
+        echo "  service = tts_api | chat_api | stt_api | php_web"
+        exit 1
+        ;;
+esac
